@@ -1,10 +1,16 @@
 # crafter-glass
 
-![The Crafter Station mark as thick glass, floating in front of /ship-it](.github/hero.jpg)
+![The Crafter Station mark as thick glass, floating in front of /ship](.github/hero.jpg)
 
-The Crafter Station mark as a thick glass knot, floating in front of `/ship-it` and refracting
-it, rendered on WebGPU with [vgpu](https://vgpu.sh) as the only rendering dependency. Move the
-pointer to look around it.
+The Crafter Station mark as a thick glass knot, floating in front of `/ship` and refracting it,
+rendered on WebGPU with [vgpu](https://vgpu.sh) as the only rendering dependency. Move the pointer
+to look around it.
+
+The handle on the right edge opens a drawer with every property: the words and their ink, size and
+lift; the tube width and the knot's size; the glass (refraction, dispersion, the depth of the front
+and back passes, reflections, the light panel, the highlight, contact shade); the background,
+shadow and lens; float, sway and how far the camera follows the pointer; and the tilt-shift blur.
+The whole state is live JSON at the bottom, kept between visits; **Reset** returns to the default.
 
 ```bash
 npm install

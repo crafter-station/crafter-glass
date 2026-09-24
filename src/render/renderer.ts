@@ -14,7 +14,9 @@ import {
   type Target,
 } from "vgpu";
 import type { KnotMesh } from "../knot";
-import { createRig, floating, GROUND, knotScale, TEXT_DEPTH, type Pointer } from "../scene";
+import { createRig, floating, GROUND, knotScale, REST, TEXT_DEPTH, type Pointer } from "../scene";
+import { linear, type Look } from "../state/look";
+import type { Store } from "../state/store";
 import { createTextSheet, type TextSheet } from "../text";
 import { topDown, viewHeight, viewProjection } from "./camera";
 import blurWgsl from "./shaders/blur.wgsl";
@@ -26,31 +28,39 @@ import presentWgsl from "./shaders/present.wgsl";
 import silhouetteWgsl from "./shaders/silhouette.wgsl";
 import textWgsl from "./shaders/text.wgsl";
 
-const BACKGROUND = 0.7454;
-const REST_DISTANCE = 25 - TEXT_DEPTH;
-const FONT = 14;
+const REST_DISTANCE = REST - TEXT_DEPTH;
 const FIT = 0.92;
-const LIFT = 0;
 const SHADOW_REACH = 8;
 const SHADOW_SIZE = 128;
 const SHADOW_LOW = 32;
 const SHADOW_ROUNDS = 2;
 const SHADOW_SPREAD = 2;
-const SHADOW_OPACITY = 0.95;
 const GROUND_EXTENT = 60;
 const SOFT_SPREAD = 2.5;
 const LIGHT = [20, 20, 10] as const;
-const GLASS = { ior: 1.5, aberration: 0.06, reflections: 1, occlusion: 0.45, shine: 2.5 };
-const FRONT = 2;
-const BACK = 5;
-const TILT = { focus: 0.12, falloff: 1, shade: 0.22, floor: 0.6 };
+const FALLOFF = 1;
+const FLOOR = 0.6;
 
 type Size = readonly [number, number];
+
+export interface Options {
+  readonly look: Store<Look>;
+}
 
 export interface Renderer {
   readonly ready: Promise<void>;
   point(pointer: Pointer): void;
+  reshape(mesh: KnotMesh): Promise<void>;
+  words(lines: readonly string[]): Promise<void>;
   dispose(): void;
+}
+
+interface Knot {
+  readonly thickness: number;
+  readonly geometry: ReturnType<typeof geometry>;
+  readonly silhouette: Draw;
+  readonly glassBack: Draw;
+  readonly glass: Draw;
 }
 
 interface Stage {
@@ -64,12 +74,9 @@ interface Stage {
   readonly half: Target;
   readonly soft: readonly [Target, Target];
   readonly shadow: { readonly raw: Target; readonly mid: Target; readonly low: readonly [Target, Target] };
-  readonly sheet: TextSheet;
+  readonly clamp: GPUSampler;
   readonly text: Draw;
   readonly ground: Draw;
-  readonly silhouette: Draw;
-  readonly glassBack: Draw;
-  readonly glass: Draw;
   readonly compositeBack: Effect;
   readonly composite: Effect;
   readonly shrinkMid: Effect;
@@ -78,14 +85,60 @@ interface Stage {
   readonly downHalf: Effect;
   readonly softBlur: readonly [Effect, Effect];
   readonly present: Effect;
+  sheet: TextSheet;
+  knot: Knot;
 }
 
 const halve = ([width, height]: Size): Size => [Math.max(1, width >> 1), Math.max(1, height >> 1)];
 
+function createKnot(gpu: Gpu, mesh: KnotMesh, stage: Pick<Stage, "scene" | "behind" | "clamp">): Knot {
+  const shape = geometry(gpu, {
+    buffers: [
+      { data: mesh.positions, attributes: { position: "float32x3" } },
+      { data: mesh.normals, attributes: { normal: "float32x3" } },
+      { data: mesh.cores, attributes: { core: "float32x3" } },
+      { data: mesh.occlusion, attributes: { occlusion: "float32" } },
+    ],
+    indices: mesh.indices,
+  });
+  return {
+    thickness: mesh.thickness,
+    geometry: shape,
+    silhouette: draw(gpu, {
+      shader: silhouetteWgsl,
+      geometry: shape,
+      depth: false,
+      cull: "none",
+      label: "silhouette",
+    }),
+    glassBack: draw(gpu, {
+      shader: glassWgsl,
+      geometry: shape,
+      cull: "front",
+      label: "glass-back",
+      set: { scene: stage.scene, sceneSampler: stage.clamp },
+    }),
+    glass: draw(gpu, {
+      shader: glassWgsl,
+      geometry: shape,
+      cull: "back",
+      label: "glass",
+      set: { scene: stage.behind, sceneSampler: stage.clamp },
+    }),
+  };
+}
+
+const compileKnot = (knot: Knot, stage: Pick<Stage, "shadow" | "back" | "lit">) =>
+  Promise.all([
+    knot.silhouette.compile(stage.shadow.raw),
+    knot.glassBack.compile(stage.back),
+    knot.glass.compile(stage.lit),
+  ]);
+
 export function createRenderer(
   canvas: HTMLCanvasElement,
   mesh: Promise<KnotMesh>,
-  lines: readonly string[],
+  options: Options,
 ): Renderer {
   let disposed = false;
   let gpu: Gpu | undefined;
@@ -102,34 +155,24 @@ export function createRenderer(
     const dt = Math.min(0.05, Math.max(0, (now - previous) / 1000));
     previous = now;
     time += dt;
-    rig.step(dt, pointer);
-    render(stage, time, rig.eye);
+    rig.step(dt, pointer, options.look.get().follow);
+    render(stage, time, rig.eye, options.look.get());
     request = requestAnimationFrame(tick);
   };
 
   const start = async () => {
     gpu = await init();
     if (disposed) return gpu.dispose();
-    const [first, sheet] = await Promise.all([mesh, createTextSheet(gpu, lines)]);
+    const [first, sheet] = await Promise.all([mesh, createTextSheet(gpu, [options.look.get().text])]);
     if (disposed) return;
     const output = surface(gpu, canvas, { dpr: [1, 2] });
-    const scene = target(gpu, { size: output.size, format: "rgba16float", label: "scene" });
-    const back = target(gpu, {
-      size: output.size,
-      format: "rgba16float",
-      msaa: true,
-      depth: true,
-      label: "back",
-    });
-    const behind = target(gpu, { size: output.size, format: "rgba16float", label: "behind" });
-    const lit = target(gpu, {
-      size: output.size,
-      format: "rgba16float",
-      msaa: true,
-      depth: true,
-      label: "lit",
-    });
-    const image = target(gpu, { size: output.size, format: "rgba16float", label: "image" });
+    const screen = (label: string, msaa = false) =>
+      target(gpu!, { size: output.size, format: "rgba16float", msaa, depth: msaa, label });
+    const scene = screen("scene");
+    const back = screen("back", true);
+    const behind = screen("behind");
+    const lit = screen("lit", true);
+    const image = screen("image");
     const half = target(gpu, { size: halve(output.size), format: "rgba16float", label: "half" });
     const soft = [0, 1].map((i) =>
       target(gpu!, { size: halve(output.size), format: "rgba16float", label: `soft-${i}` }),
@@ -165,19 +208,6 @@ export function createRenderer(
       ],
       indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
     });
-    const knot = geometry(gpu, {
-      buffers: [
-        { data: first.positions, attributes: { position: "float32x3" } },
-        { data: first.normals, attributes: { normal: "float32x3" } },
-        { data: first.cores, attributes: { core: "float32x3" } },
-        { data: first.occlusion, attributes: { occlusion: "float32" } },
-      ],
-      indices: first.indices,
-    });
-    const shape = geometry(gpu, {
-      buffers: [{ data: first.positions, attributes: { position: "float32x3" } }],
-      indices: first.indices,
-    });
 
     const text = draw(gpu, {
       shader: textWgsl,
@@ -197,27 +227,7 @@ export function createRenderer(
       label: "ground",
       set: { shadow: shadow.low[0], shadowSampler: clamp },
     });
-    const silhouette = draw(gpu, {
-      shader: silhouetteWgsl,
-      geometry: shape,
-      depth: false,
-      cull: "none",
-      label: "silhouette",
-    });
-    const glassBack = draw(gpu, {
-      shader: glassWgsl,
-      geometry: knot,
-      cull: "front",
-      label: "glass-back",
-      set: { scene, sceneSampler: clamp },
-    });
-    const glass = draw(gpu, {
-      shader: glassWgsl,
-      geometry: knot,
-      cull: "back",
-      label: "glass",
-      set: { scene: behind, sceneSampler: clamp },
-    });
+    const knot = createKnot(gpu, first, { scene, behind, clamp });
     const compositeBack = effect(gpu, compositeWgsl, {
       label: "composite-back",
       set: { backdrop: scene, glass: back, compositeSampler: clamp },
@@ -252,7 +262,7 @@ export function createRenderer(
     ] as const;
     const present = effect(gpu, presentWgsl, {
       label: "present",
-      set: { sharp: image, soft: soft[1], presentSampler: clamp, present: TILT },
+      set: { sharp: image, soft: soft[1], presentSampler: clamp },
     });
 
     const current: Stage = {
@@ -266,12 +276,9 @@ export function createRenderer(
       half,
       soft,
       shadow,
-      sheet,
+      clamp,
       text,
       ground,
-      silhouette,
-      glassBack,
-      glass,
       compositeBack,
       composite,
       shrinkMid,
@@ -280,15 +287,15 @@ export function createRenderer(
       downHalf,
       softBlur,
       present,
+      sheet,
+      knot,
     };
     fit(current);
     await Promise.all([
       text.compile(scene),
       ground.compile(scene),
-      silhouette.compile(shadow.raw),
-      glassBack.compile(back),
+      compileKnot(knot, current),
       compositeBack.compile(behind),
-      glass.compile(lit),
       composite.compile(image),
       shrinkMid.compile(shadow.mid),
       shrinkLow.compile(shadow.low[0]),
@@ -313,6 +320,26 @@ export function createRenderer(
     point(next) {
       pointer = next;
     },
+    async reshape(next) {
+      await ready;
+      if (!stage || !gpu) return;
+      const knot = createKnot(gpu, next, stage);
+      await compileKnot(knot, stage);
+      if (disposed) return knot.geometry.destroy();
+      const old = stage.knot;
+      stage.knot = knot;
+      old.geometry.destroy();
+    },
+    async words(lines) {
+      await ready;
+      if (!stage || !gpu) return;
+      const sheet = await createTextSheet(gpu, lines);
+      if (disposed) return sheet.destroy();
+      const old = stage.sheet;
+      stage.sheet = sheet;
+      stage.text.set({ glyphs: sheet.texture });
+      old.destroy();
+    },
     dispose() {
       disposed = true;
       if (request) cancelAnimationFrame(request);
@@ -326,35 +353,40 @@ export function createRenderer(
 function fit(stage: Stage): void {
   const { output, scene, back, behind, lit, image, half, soft, softBlur } = stage;
   if (scene.size[0] !== output.size[0] || scene.size[1] !== output.size[1]) {
-    scene.resize(output.size);
-    back.resize(output.size);
-    behind.resize(output.size);
-    lit.resize(output.size);
-    image.resize(output.size);
-    half.resize(halve(output.size));
-    soft.forEach((level) => level.resize(halve(output.size)));
+    [scene, back, behind, lit, image].forEach((level) => level.resize(output.size));
+    [half, ...soft].forEach((level) => level.resize(halve(output.size)));
   }
   const [tx, ty] = half.texelSize;
   softBlur[0].set({ blur: { step: [tx * SOFT_SPREAD, 0] } });
   softBlur[1].set({ blur: { step: [0, ty * SOFT_SPREAD] } });
 }
 
-/** The text's world size: the font size, shrunk until the widest line fits the rest view. */
-function textSize(sheet: TextSheet, aspect: number): [number, number] {
-  const width = viewHeight(REST_DISTANCE) * aspect;
+/** The words' world size: the font size, shrunk until the widest line fits the rest view. */
+function textSize(sheet: TextSheet, aspect: number, look: Look): [number, number] {
+  const width = viewHeight(REST_DISTANCE, look.fov) * aspect;
   const linesWide = sheet.width * sheet.aspect * sheet.rows;
-  const font = Math.min(FONT, (FIT * width) / linesWide);
+  const font = Math.min(look.font, (FIT * width) / linesWide);
   return [font * sheet.aspect * sheet.rows, font * sheet.rows];
 }
 
-function render(stage: Stage, time: number, eye: readonly [number, number, number]): void {
-  const { gpu, output, scene, back, behind, lit, image, half, soft, shadow, sheet } = stage;
+function render(stage: Stage, time: number, eye: readonly [number, number, number], look: Look): void {
+  const { gpu, output, scene, back, behind, lit, image, half, soft, shadow, sheet, knot } = stage;
+  const background = linear(look.background);
   frame(gpu, (current) => {
     const [width, height] = output.size;
-    const camera = viewProjection([width, height], eye);
-    const model = floating(time, knotScale(width / height));
+    const aspect = width / height;
+    const camera = viewProjection([width, height], eye, look.fov);
+    const model = floating(time, knotScale(aspect, look.fov, look.size), look.float, look.sway);
+    const tube = look.thickness / knot.thickness;
     stage.text.set({
-      text: { viewProjection: camera, size: textSize(sheet, width / height), depth: TEXT_DEPTH, lift: LIFT },
+      text: {
+        viewProjection: camera,
+        size: textSize(sheet, aspect, look),
+        depth: TEXT_DEPTH,
+        lift: look.lift,
+        ink: linear(look.ink),
+        pad: 0,
+      },
     });
     stage.ground.set({
       ground: {
@@ -362,28 +394,43 @@ function render(stage: Stage, time: number, eye: readonly [number, number, numbe
         height: GROUND,
         reach: SHADOW_REACH,
         extent: GROUND_EXTENT,
-        opacity: SHADOW_OPACITY,
+        opacity: look.shadow,
       },
     });
-    stage.silhouette.set({ silhouette: { viewProjection: topDown(SHADOW_REACH, 20, 40), model } });
-    const lens = { viewProjection: camera, model, eye, light: LIGHT, ...GLASS };
-    stage.glassBack.set({ glass: { ...lens, thickness: BACK, side: -1 } });
-    stage.glass.set({ glass: { ...lens, thickness: FRONT, side: 1 } });
+    knot.silhouette.set({ silhouette: { viewProjection: topDown(SHADOW_REACH, 20, 40), model, tube } });
+    const lens = {
+      viewProjection: camera,
+      model,
+      eye,
+      light: LIGHT,
+      ior: look.ior,
+      aberration: look.aberration,
+      reflections: look.reflections,
+      occlusion: look.occlusion,
+      shine: look.shine,
+      tube,
+      panel: look.light,
+    };
+    knot.glassBack.set({ glass: { ...lens, thickness: look.back, side: -1 } });
+    knot.glass.set({ glass: { ...lens, thickness: look.front, side: 1 } });
+    stage.present.set({
+      present: { focus: look.focus, falloff: FALLOFF, shade: look.shade, floor: FLOOR, blur: look.blur },
+    });
 
-    current.pass({ target: shadow.raw, clear: [0, 0, 0, 0] }, (pass) => pass.draw(stage.silhouette));
+    current.pass({ target: shadow.raw, clear: [0, 0, 0, 0] }, (pass) => pass.draw(knot.silhouette));
     current.pass({ target: shadow.mid }, (pass) => pass.draw(stage.shrinkMid));
     current.pass({ target: shadow.low[0] }, (pass) => pass.draw(stage.shrinkLow));
     for (let round = 0; round < SHADOW_ROUNDS; round++) {
       current.pass({ target: shadow.low[1] }, (pass) => pass.draw(stage.shadowBlur[0]));
       current.pass({ target: shadow.low[0] }, (pass) => pass.draw(stage.shadowBlur[1]));
     }
-    current.pass({ target: scene, clear: [BACKGROUND, BACKGROUND, BACKGROUND, 1] }, (pass) => {
+    current.pass({ target: scene, clear: [...background, 1] }, (pass) => {
       pass.draw(stage.text);
       pass.draw(stage.ground);
     });
-    current.pass({ target: back, clear: [0, 0, 0, 0] }, (pass) => pass.draw(stage.glassBack));
+    current.pass({ target: back, clear: [0, 0, 0, 0] }, (pass) => pass.draw(knot.glassBack));
     current.pass({ target: behind }, (pass) => pass.draw(stage.compositeBack));
-    current.pass({ target: lit, clear: [0, 0, 0, 0] }, (pass) => pass.draw(stage.glass));
+    current.pass({ target: lit, clear: [0, 0, 0, 0] }, (pass) => pass.draw(knot.glass));
     current.pass({ target: image }, (pass) => pass.draw(stage.composite));
     current.pass({ target: half }, (pass) => pass.draw(stage.downHalf));
     current.pass({ target: soft[0] }, (pass) => pass.draw(stage.softBlur[0]));

@@ -1,10 +1,11 @@
 import { multiply, perspective, type Mat4 } from "../math/mat4";
 import { cross, dot, normalize, sub, type Vec3 } from "../math/vec3";
 
-export const FOV = (50 * Math.PI) / 180;
 const NEAR = 1;
 const FAR = 120;
 const UP: Vec3 = [0, 1, 0];
+
+const radians = (degrees: number) => (degrees * Math.PI) / 180;
 
 export function lookAt(eye: Vec3, at: Vec3): Mat4 {
   const z = normalize(sub(eye, at));
@@ -21,11 +22,12 @@ export function lookAt(eye: Vec3, at: Vec3): Mat4 {
   return m;
 }
 
-export const viewProjection = ([width, height]: readonly [number, number], eye: Vec3): Mat4 =>
-  multiply(perspective(FOV, width / height, NEAR, FAR), lookAt(eye, [0, 0, 0]));
+export const viewProjection = ([width, height]: readonly [number, number], eye: Vec3, fov: number): Mat4 =>
+  multiply(perspective(radians(fov), width / height, NEAR, FAR), lookAt(eye, [0, 0, 0]));
 
 /** Height of the view at a plane `distance` in front of the camera, in world units. */
-export const viewHeight = (distance: number): number => 2 * distance * Math.tan(FOV / 2);
+export const viewHeight = (distance: number, fov: number): number =>
+  2 * distance * Math.tan(radians(fov) / 2);
 
 /** A top-down orthographic view over a square of half-size `reach`, for the contact shadow. */
 export function topDown(reach: number, top: number, range: number): Mat4 {

@@ -1,3 +1,13 @@
+:root {
+  --fg: #111111;
+  --muted: rgba(17, 17, 17, 0.55);
+  --line: rgba(17, 17, 17, 0.1);
+  --line-strong: rgba(17, 17, 17, 0.24);
+  --glass: rgba(255, 255, 255, 0.72);
+  --press: rgba(17, 17, 17, 0.06);
+  --font: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;

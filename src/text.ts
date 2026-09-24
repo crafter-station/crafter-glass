@@ -8,6 +8,7 @@ const LINE = 1.15;
 const CAP = 0.727;
 const TRACKING = -0.025;
 const LEVELS = 5;
+const FILL = 0.94;
 const FONT_WAIT = 2500;
 
 export interface TextSheet {
@@ -32,14 +33,20 @@ export async function createTextSheet(gpu: Gpu, lines: readonly string[]): Promi
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
   const context = canvas.getContext("2d")!;
-  context.font = `400 ${FONT}px Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`;
-  context.letterSpacing = `${TRACKING * FONT}px`;
+  const style = (px: number) => {
+    context.font = `400 ${px}px Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`;
+    context.letterSpacing = `${TRACKING * px}px`;
+  };
+  style(FONT);
+  const widest = Math.max(...lines.map((line) => context.measureText(line).width));
+  const font = Math.min(FONT, (FONT * FILL * WIDTH) / Math.max(widest, 1));
+  style(font);
   context.textAlign = "center";
   context.textBaseline = "alphabetic";
-  context.fillStyle = "#000";
-  const block = CAP * FONT + (lines.length - 1) * LINE * FONT;
+  context.fillStyle = "#fff";
+  const block = CAP * font + (lines.length - 1) * LINE * font;
   const top = (HEIGHT - block) / 2;
-  lines.forEach((line, i) => context.fillText(line, WIDTH / 2, top + CAP * FONT + i * LINE * FONT));
+  lines.forEach((line, i) => context.fillText(line, WIDTH / 2, top + CAP * font + i * LINE * font));
   const width = Math.max(...lines.map((line) => context.measureText(line).width)) / WIDTH;
 
   const sheet = texture(gpu, {
@@ -76,7 +83,7 @@ export async function createTextSheet(gpu: Gpu, lines: readonly string[]): Promi
   return {
     texture: sheet,
     aspect: WIDTH / HEIGHT,
-    rows: HEIGHT / FONT,
+    rows: HEIGHT / font,
     width,
     destroy: () => sheet.destroy(),
   };

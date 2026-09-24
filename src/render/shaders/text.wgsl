@@ -3,6 +3,8 @@ struct Text {
   size: vec2f,
   depth: f32,
   lift: f32,
+  ink: vec3f,
+  pad: f32,
 }
 
 @group(0) @binding(0) var<uniform> text: Text;
@@ -26,5 +28,5 @@ fn vs_main(@location(0) position: vec2f) -> VertexOut {
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
   let coverage = textureSample(glyphs, glyphSampler, in.uv).a;
-  return vec4f(0.0, 0.0, 0.0, coverage);
+  return vec4f(text.ink, coverage);
 }

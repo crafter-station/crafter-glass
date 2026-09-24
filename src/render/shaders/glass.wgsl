@@ -14,6 +14,8 @@ struct Glass {
   occlusion: f32,
   shine: f32,
   side: f32,
+  tube: f32,
+  panel: f32,
 }
 
 @group(0) @binding(0) var<uniform> glass: Glass;
@@ -35,7 +37,8 @@ fn vs_main(
   @location(2) core: vec3f,
   @location(3) occlusion: f32,
 ) -> VertexOut {
-  let world = glass.model * vec4f(position, 1.0);
+  let local = core + (position - core) * glass.tube;
+  let world = glass.model * vec4f(local, 1.0);
   var out: VertexOut;
   out.position = glass.viewProjection * world;
   out.world = world.xyz;
@@ -80,7 +83,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
     );
   }
   transmitted /= f32(SAMPLES);
-  let reflected = environment(reflect(incident, normal)) * glass.reflections;
+  let reflected = environment(reflect(incident, normal), glass.panel) * glass.reflections;
 
   let toLight = normalize(glass.light - in.world);
   let halfway = normalize(toLight + view);
