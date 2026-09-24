@@ -1,5 +1,7 @@
 import { environment } from "./env.wgsl";
 
+const SAMPLES = 6;
+
 struct Glass {
   viewProjection: mat4x4f,
   model: mat4x4f,
@@ -11,6 +13,7 @@ struct Glass {
   reflections: f32,
   occlusion: f32,
   shine: f32,
+  side: f32,
 }
 
 @group(0) @binding(0) var<uniform> glass: Glass;
@@ -48,49 +51,35 @@ fn screenUv(world: vec3f) -> vec2f {
   return clamp(vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5), vec2f(0.001), vec2f(0.999));
 }
 
-struct Exit {
-  uv: vec2f,
-  sheen: f32,
-  mirror: vec3f,
-}
-
-/** Light entering a round tube, crossing it, and leaving through the far wall. */
-fn through(world: vec3f, normal: vec3f, core: vec3f, incident: vec3f, ior: f32) -> Exit {
+/** Where a ray bent into the glass at this point comes out, as the transmission material does it. */
+fn exitUv(world: vec3f, normal: vec3f, incident: vec3f, ior: f32, radius: f32) -> vec2f {
   let inside = refract(incident, normal, 1.0 / ior);
-  let radius = length(world - core);
-  let chord = max(-2.0 * dot(world - core, inside), 0.0);
-  let far = world + inside * chord;
-  let wall = normalize(far - core);
-  let f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
-  var out = refract(inside, -wall, ior);
-  var sheen = f0 + (1.0 - f0) * pow(1.0 - max(dot(-inside, wall), 0.0), 5.0);
-  if (dot(out, out) < 0.5) {
-    out = reflect(inside, wall);
-    sheen = 1.0;
-  }
-  return Exit(screenUv(far + out * glass.thickness * radius), sheen, reflect(inside, wall));
+  return screenUv(world + inside * glass.thickness * radius);
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
-  let normal = normalize(in.normal);
+  let normal = normalize(in.normal) * glass.side;
   let view = normalize(glass.eye - in.world);
   let facing = clamp(dot(normal, view), 0.0, 1.0);
   let incident = -view;
+  let radius = length(in.world - in.core);
   let f0 = pow((glass.ior - 1.0) / (glass.ior + 1.0), 2.0);
   let fresnel = f0 + (1.0 - f0) * pow(1.0 - facing, 5.0);
 
-  let spread = glass.aberration;
-  let red = through(in.world, normal, in.core, incident, glass.ior - spread);
-  let green = through(in.world, normal, in.core, incident, glass.ior);
-  let blue = through(in.world, normal, in.core, incident, glass.ior + spread);
-  let behind = vec3f(
-    textureSampleLevel(scene, sceneSampler, red.uv, 0.0).r,
-    textureSampleLevel(scene, sceneSampler, green.uv, 0.0).g,
-    textureSampleLevel(scene, sceneSampler, blue.uv, 0.0).b,
-  );
-  let inner = environment(green.mirror) * glass.reflections;
-  let refracted = mix(behind, inner, green.sheen * 0.22);
+  var transmitted = vec3f(0.0);
+  for (var i = 0; i < SAMPLES; i++) {
+    let slide = f32(i) / f32(SAMPLES) * 0.1;
+    let red = glass.ior * (1.0 - glass.aberration * slide);
+    let green = glass.ior * (1.0 - glass.aberration * (slide + 1.0));
+    let blue = glass.ior * (1.0 - glass.aberration * (slide + 2.0));
+    transmitted += vec3f(
+      textureSampleLevel(scene, sceneSampler, exitUv(in.world, normal, incident, red, radius), 0.0).r,
+      textureSampleLevel(scene, sceneSampler, exitUv(in.world, normal, incident, green, radius), 0.0).g,
+      textureSampleLevel(scene, sceneSampler, exitUv(in.world, normal, incident, blue, radius), 0.0).b,
+    );
+  }
+  transmitted /= f32(SAMPLES);
   let reflected = environment(reflect(incident, normal)) * glass.reflections;
 
   let toLight = normalize(glass.light - in.world);
@@ -99,6 +88,6 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
   let highlight = pow(max(dot(normal, halfway), 0.0), 600.0) * glance * glass.shine;
 
   let shade = mix(1.0 - glass.occlusion, 1.0, in.occlusion);
-  let color = (mix(refracted, reflected, fresnel) + vec3f(highlight)) * shade;
+  let color = (transmitted * (1.0 - fresnel) + reflected * fresnel + vec3f(highlight)) * shade;
   return vec4f(color, 1.0);
 }

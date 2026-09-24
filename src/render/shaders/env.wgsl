@@ -22,8 +22,8 @@ fn panel(direction: vec3f, p: Panel, blur: f32) -> f32 {
 /** A bright city sky over a dim street, with the example's tall light panel at the right. */
 export fn environment(direction: vec3f) -> vec3f {
   let up = clamp(direction.y, -1.0, 1.0);
-  let sky = mix(vec3f(0.7, 0.72, 0.76), vec3f(1.3, 1.35, 1.45), pow(max(up, 0.0), 0.7));
-  let street = mix(vec3f(0.62, 0.64, 0.68), vec3f(0.22, 0.21, 0.2), pow(max(-up, 0.0), 0.6));
+  let sky = mix(vec3f(0.35, 0.36, 0.38), vec3f(2.4, 2.5, 2.7), pow(max(up, 0.0), 0.8));
+  let street = mix(vec3f(0.35, 0.36, 0.38), vec3f(0.07, 0.07, 0.06), pow(max(-up, 0.0), 0.5));
   let base = select(street, sky, up > 0.0);
   let light = panel(direction, Panel(vec3f(10.0, 5.0, 0.0), vec2f(10.0, 50.0), 8.0), 0.6);
   return base + vec3f(light);

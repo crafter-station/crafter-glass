@@ -28,9 +28,9 @@ import textWgsl from "./shaders/text.wgsl";
 
 const BACKGROUND = 0.7454;
 const REST_DISTANCE = 25 - TEXT_DEPTH;
-const FONT = 8.6;
-const FIT = 0.9;
-const LIFT = 0.8;
+const FONT = 14;
+const FIT = 0.92;
+const LIFT = 0;
 const SHADOW_REACH = 8;
 const SHADOW_SIZE = 128;
 const SHADOW_LOW = 32;
@@ -40,7 +40,9 @@ const SHADOW_OPACITY = 0.95;
 const GROUND_EXTENT = 60;
 const SOFT_SPREAD = 2.5;
 const LIGHT = [20, 20, 10] as const;
-const GLASS = { ior: 1.5, thickness: 1.2, aberration: 0.02, reflections: 1.3, occlusion: 0.45, shine: 2.5 };
+const GLASS = { ior: 1.5, aberration: 0.06, reflections: 1, occlusion: 0.45, shine: 2.5 };
+const FRONT = 2;
+const BACK = 5;
 const TILT = { focus: 0.12, falloff: 1, shade: 0.22, floor: 0.6 };
 
 type Size = readonly [number, number];
@@ -55,6 +57,8 @@ interface Stage {
   readonly gpu: Gpu;
   readonly output: Surface;
   readonly scene: Target;
+  readonly back: Target;
+  readonly behind: Target;
   readonly lit: Target;
   readonly image: Target;
   readonly half: Target;
@@ -64,7 +68,9 @@ interface Stage {
   readonly text: Draw;
   readonly ground: Draw;
   readonly silhouette: Draw;
+  readonly glassBack: Draw;
   readonly glass: Draw;
+  readonly compositeBack: Effect;
   readonly composite: Effect;
   readonly shrinkMid: Effect;
   readonly shrinkLow: Effect;
@@ -108,6 +114,14 @@ export function createRenderer(
     if (disposed) return;
     const output = surface(gpu, canvas, { dpr: [1, 2] });
     const scene = target(gpu, { size: output.size, format: "rgba16float", label: "scene" });
+    const back = target(gpu, {
+      size: output.size,
+      format: "rgba16float",
+      msaa: true,
+      depth: true,
+      label: "back",
+    });
+    const behind = target(gpu, { size: output.size, format: "rgba16float", label: "behind" });
     const lit = target(gpu, {
       size: output.size,
       format: "rgba16float",
@@ -190,12 +204,23 @@ export function createRenderer(
       cull: "none",
       label: "silhouette",
     });
+    const glassBack = draw(gpu, {
+      shader: glassWgsl,
+      geometry: knot,
+      cull: "front",
+      label: "glass-back",
+      set: { scene, sceneSampler: clamp },
+    });
     const glass = draw(gpu, {
       shader: glassWgsl,
       geometry: knot,
       cull: "back",
       label: "glass",
-      set: { scene, sceneSampler: clamp },
+      set: { scene: behind, sceneSampler: clamp },
+    });
+    const compositeBack = effect(gpu, compositeWgsl, {
+      label: "composite-back",
+      set: { backdrop: scene, glass: back, compositeSampler: clamp },
     });
     const composite = effect(gpu, compositeWgsl, {
       label: "composite",
@@ -234,6 +259,8 @@ export function createRenderer(
       gpu,
       output,
       scene,
+      back,
+      behind,
       lit,
       image,
       half,
@@ -243,7 +270,9 @@ export function createRenderer(
       text,
       ground,
       silhouette,
+      glassBack,
       glass,
+      compositeBack,
       composite,
       shrinkMid,
       shrinkLow,
@@ -257,6 +286,8 @@ export function createRenderer(
       text.compile(scene),
       ground.compile(scene),
       silhouette.compile(shadow.raw),
+      glassBack.compile(back),
+      compositeBack.compile(behind),
       glass.compile(lit),
       composite.compile(image),
       shrinkMid.compile(shadow.mid),
@@ -293,9 +324,11 @@ export function createRenderer(
 
 /** Sizes the screen targets to the surface and refreshes the blur steps that depend on them. */
 function fit(stage: Stage): void {
-  const { output, scene, lit, image, half, soft, softBlur } = stage;
+  const { output, scene, back, behind, lit, image, half, soft, softBlur } = stage;
   if (scene.size[0] !== output.size[0] || scene.size[1] !== output.size[1]) {
     scene.resize(output.size);
+    back.resize(output.size);
+    behind.resize(output.size);
     lit.resize(output.size);
     image.resize(output.size);
     half.resize(halve(output.size));
@@ -315,7 +348,7 @@ function textSize(sheet: TextSheet, aspect: number): [number, number] {
 }
 
 function render(stage: Stage, time: number, eye: readonly [number, number, number]): void {
-  const { gpu, output, scene, lit, image, half, soft, shadow, sheet } = stage;
+  const { gpu, output, scene, back, behind, lit, image, half, soft, shadow, sheet } = stage;
   frame(gpu, (current) => {
     const [width, height] = output.size;
     const camera = viewProjection([width, height], eye);
@@ -333,7 +366,9 @@ function render(stage: Stage, time: number, eye: readonly [number, number, numbe
       },
     });
     stage.silhouette.set({ silhouette: { viewProjection: topDown(SHADOW_REACH, 20, 40), model } });
-    stage.glass.set({ glass: { viewProjection: camera, model, eye, light: LIGHT, ...GLASS } });
+    const lens = { viewProjection: camera, model, eye, light: LIGHT, ...GLASS };
+    stage.glassBack.set({ glass: { ...lens, thickness: BACK, side: -1 } });
+    stage.glass.set({ glass: { ...lens, thickness: FRONT, side: 1 } });
 
     current.pass({ target: shadow.raw, clear: [0, 0, 0, 0] }, (pass) => pass.draw(stage.silhouette));
     current.pass({ target: shadow.mid }, (pass) => pass.draw(stage.shrinkMid));
@@ -346,6 +381,8 @@ function render(stage: Stage, time: number, eye: readonly [number, number, numbe
       pass.draw(stage.text);
       pass.draw(stage.ground);
     });
+    current.pass({ target: back, clear: [0, 0, 0, 0] }, (pass) => pass.draw(stage.glassBack));
+    current.pass({ target: behind }, (pass) => pass.draw(stage.compositeBack));
     current.pass({ target: lit, clear: [0, 0, 0, 0] }, (pass) => pass.draw(stage.glass));
     current.pass({ target: image }, (pass) => pass.draw(stage.composite));
     current.pass({ target: half }, (pass) => pass.draw(stage.downHalf));

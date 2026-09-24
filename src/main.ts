@@ -2,8 +2,8 @@ import { createBuilder } from "./knot/builder";
 import { createRenderer } from "./render/renderer";
 import "./styles.css";
 
-const LINES = ["Crafter", "Station"];
-const THICKNESS = 1.9;
+const LINES = ["/ship-it"];
+const THICKNESS = 2.2;
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
 const poster = document.querySelector<HTMLElement>("#poster")!;

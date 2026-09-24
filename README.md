@@ -1,10 +1,10 @@
 # crafter-glass
 
-![The Crafter Station mark as thick glass, floating in front of its name](.github/hero.jpg)
+![The Crafter Station mark as thick glass, floating in front of /ship-it](.github/hero.jpg)
 
-The Crafter Station mark as a thick glass knot, floating in front of its name and refracting it,
-rendered on WebGPU with [vgpu](https://vgpu.sh) as the only rendering dependency. Move the pointer
-to look around it.
+The Crafter Station mark as a thick glass knot, floating in front of `/ship-it` and refracting
+it, rendered on WebGPU with [vgpu](https://vgpu.sh) as the only rendering dependency. Move the
+pointer to look around it.
 
 ```bash
 npm install
@@ -13,17 +13,19 @@ npm run build
 ```
 
 Needs a browser with WebGPU: current Chrome, Edge and Safari 26 on desktop, Safari on iOS 26,
-Chrome on Android. Without it the page shows the name and says so.
+Chrome on Android. Without it the page shows the words and says so.
 
 ## How it works
 
 - The tubes come from [crafter-knot](https://github.com/crafter-station/crafter-knot): the mark's
   outline fitted as B-spline strokes and swept into a watertight mesh in a worker.
-- The name is drawn once with Inter on a 4096-pixel canvas, mipmapped, and stood ten units behind
-  the knot, so the camera moves it in perspective and the glass refracts it.
-- The glass refracts each pixel into the tube, across it and out through the far wall, per colour
-  channel, then adds Fresnel reflections of a bright studio and the sheen of the far wall. Contact
-  between tubes is darkened from baked occlusion.
+- The words are drawn once with Inter on a 4096-pixel canvas, mipmapped, and stood ten units
+  behind the knot, so the camera moves it in perspective and the glass refracts it.
+- The glass is two passes, as the transmission material does it: the back faces refract the scene
+  behind them, then the front faces refract that result, so tubes show through tubes. Each pass
+  spreads the refraction over six samples with a different index per colour channel, which is
+  where the fringes come from, and adds Fresnel reflections of a bright sky over a dark street.
+  Contact between tubes is darkened from baked occlusion.
 - A top-down silhouette of the knot, blurred at 32 pixels, is the contact shadow on the floor. The
   present pass blends in a half-resolution blur toward the top and bottom of the frame, tilt-shift
   style.
